@@ -1,0 +1,4 @@
+__pycache__/form_interaction.cpython-312.pyc
+form_fields.json
+*.log
+outputs/user_notes.csv
