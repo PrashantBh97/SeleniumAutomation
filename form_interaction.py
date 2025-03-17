@@ -60,7 +60,7 @@ class FormInteraction:
                     # Log submit button location
                     submit_xpath = field_info.get('xpath', '')
                     if submit_xpath:
-                        logger.info(f"Submit button found at XPath: {submit_xpath}")
+                        logger.info(f"--------------->  Submit button found at XPath: {submit_xpath}")
                         continue
                     else:
                         logger.info("Submit button NOT found")
@@ -103,9 +103,7 @@ class FormInteraction:
                         self.handle_dropdown(element, user_value)
                     elif element_type == 'checkbox' and isinstance(user_value, bool):
                         # Handle boolean checkbox values
-                        is_checked = element.is_selected()
-                        if (user_value and not is_checked) or (not user_value and is_checked):
-                            element.click()
+                        self.select_checkbox_by_xpath(xpath, field_name)
                     else:
                         # Clear existing value and input new value
                         element.clear()
@@ -167,9 +165,7 @@ class FormInteraction:
                         self.handle_dropdown(element, matching_value)
                     elif element_type == 'checkbox' and isinstance(matching_value, bool):
                         # Handle boolean checkbox values
-                        is_checked = element.is_selected()
-                        if (matching_value and not is_checked) or (not matching_value and is_checked):
-                            element.click()
+                        self.select_checkbox_by_xpath(xpath, field_name)
                     else:
                         # Clear and input value
                         element.clear()
@@ -232,18 +228,36 @@ class FormInteraction:
             except Exception:
                 pass
             
-            # Strategy 4: Select first non-empty option as fallback
+            # # Strategy 4: Select first non-empty option as fallback
+            # try:
+            #     options = select.options
+            #     for option in options:
+            #         if option.text.strip() and not option.text.lower() in ['select', 'choose', 'pick', '---']:
+            #             select.select_by_visible_text(option.text)
+            #             logger.info(f"Selected first valid dropdown option as fallback: {option.text}")
+            #             return
+            # except Exception:
+            #     pass
+            
+            # Strategy 5: Select last option as fallback
             try:
                 options = select.options
-                for option in options:
-                    if option.text.strip() and not option.text.lower() in ['select', 'choose', 'pick', '---']:
-                        select.select_by_visible_text(option.text)
-                        logger.info(f"Selected first valid dropdown option as fallback: {option.text}")
+                if options:
+                    # Select the last non-placeholder option
+                    last_valid_option = None
+                    for option in reversed(options):
+                        if option.text.strip() and not option.text.lower() in ['select', 'choose', 'pick', '---']:
+                            last_valid_option = option
+                            break
+                    
+                    if last_valid_option:
+                        select.select_by_visible_text(last_valid_option.text)
+                        logger.info(f"Selected last valid dropdown option as fallback: {last_valid_option.text}")
                         return
             except Exception:
                 pass
                 
-            # Strategy 5: Select by index as last resort
+            # Strategy 6: Select by index as last resort
             try:
                 select.select_by_index(1)  # Usually index 0 is the placeholder
                 logger.info("Selected dropdown option by index 1")
@@ -298,88 +312,234 @@ class FormInteraction:
                             logger.info(f"Selected custom dropdown option by partial match: {item.text}")
                             return
                     
-                    # Strategy 3: Select first item as fallback
+                    # Strategy 3: Select last item as fallback
                     if len(dropdown_items) > 0:
-                        dropdown_items[0].click()
-                        logger.info(f"Selected first custom dropdown option as fallback: {dropdown_items[0].text}")
+                        last_valid_item = None
+                        for item in reversed(dropdown_items):
+                            if item.text.strip() and not item.text.lower() in ['select', 'choose', 'pick', '---']:
+                                last_valid_item = item
+                                break
+                        
+                        if last_valid_item:
+                            last_valid_item.click()
+                            logger.info(f"Selected last valid custom dropdown option as fallback: {last_valid_item.text}")
+                        else:
+                            # If no valid item found, select the last item
+                            dropdown_items[-1].click()
+                            logger.info(f"Selected last custom dropdown option as fallback: {dropdown_items[-1].text}")
                         return
             except Exception as e:
                 logger.warning(f"Custom dropdown selection failed: {e}")
     
     def handle_privacy_field(self, entry):
         """
-        Handle privacy checkboxes/consent fields
+        Handle privacy checkboxes/consent fields with multiple strategies
         
         :param entry: Dictionary containing form entry data
         """
         try:
-            # Try to find privacy field
-            privacy_info = entry.get('fields', {}).get('Privacy', {})
+            # Vue.js specific detection strategy
+            vue_privacy_selectors = [
+                "[data-v-41ea0579][type='checkbox'][name='checkbox']",
+                "input.label-container__field.custom-checkbox[type='checkbox']"
+            ]
             
-            if privacy_info and privacy_info.get('found', False):
-                xpath = privacy_info.get('xpath', '')
-                if not xpath:
-                    return
-                
+            element = None
+            for selector in vue_privacy_selectors:
                 try:
-                    # Find element
-                    element = WebDriverWait(self.driver, 3).until(
-                        EC.element_to_be_clickable((By.XPATH, xpath))
-                    )
-                    
-                    # Check if it's already selected
-                    if element.get_attribute('type') == 'checkbox' and element.is_selected():
-                        logger.info("Privacy checkbox already selected")
+                    element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    break  # Stop if element is found
+                except NoSuchElementException:
+                    continue
+            
+            # If no Vue.js element found, fall back to original method
+            if element is None:
+                # Original privacy field finding logic
+                privacy_info = entry.get('fields', {}).get('Privacy', {})
+                
+                if privacy_info and privacy_info.get('found', False):
+                    xpath = privacy_info.get('xpath', '')
+                    if not xpath:
                         return
                     
-                    # Try different approaches to interact with the checkbox
+                    # Extract the ID from xpath if possible
+                    checkbox_id = None
+                    if 'id=' in xpath:
+                        id_match = re.search(r'id=[\'"]([^\'"]+)[\'"]', xpath)
+                        if id_match:
+                            checkbox_id = id_match.group(1)
+                    
+                    # First try to find by xpath
                     try:
-                        # First approach: Try to click the label instead of the checkbox
-                        # This often works better for styled checkboxes
+                        element = WebDriverWait(self.driver, 3).until(
+                            EC.presence_of_element_located((By.XPATH, xpath))
+                        )
+                    except Exception as xpath_error:
+                        # If xpath fails and we have ID, try finding by ID directly
                         try:
-                            # First try to find an associated label
-                            checkbox_id = element.get_attribute('id')
                             if checkbox_id:
-                                label = self.driver.find_element(By.XPATH, f"//label[@for='{checkbox_id}']")
-                                label.click()
-                                logger.info("Clicked label associated with privacy checkbox")
+                                element = self.driver.find_element(By.ID, checkbox_id)
+                            else:
+                                logger.warning("Element not found by XPath and no ID available")
                                 return
-                        except Exception as label_error:
-                            logger.debug(f"Label click failed: {label_error}")
-                        
-                        # Second approach: standard click
-                        element.click()
-                        logger.info("Clicked privacy checkbox/consent")
-                    except Exception as click_error:
-                        logger.warning(f"Standard click failed: {click_error}")
-                        try:
-                            # Third approach: JavaScript click
-                            self.driver.execute_script("arguments[0].click();", element)
-                            logger.info("Clicked privacy checkbox via JavaScript")
-                        except Exception as js_error:
-                            logger.warning(f"JavaScript click failed: {js_error}")
-                            try:
-                                # Fourth approach: Set attribute directly if it's a checkbox
-                                if element.get_attribute('type') == 'checkbox':
-                                    self.driver.execute_script(
-                                        "arguments[0].setAttribute('checked', 'checked'); "
-                                        "arguments[0].checked = true; "
-                                        "arguments[0].dispatchEvent(new Event('change', { bubbles: true }))",
-                                        element
-                                    )
-                                    logger.info("Set privacy checkbox checked state via JavaScript")
-                            except Exception as attr_error:
-                                # Fifth approach: Special handling for React/styled components
-                                try:
-                                    # Try to find span next to input as a click target
-                                    self.driver.execute_script(
-                                        "arguments[0].parentNode.querySelector('span').click();",
-                                        element
-                                    )
-                                    logger.info("Clicked span element next to privacy checkbox")
-                                except Exception as span_error:
-                                    logger.error(f"All privacy checkbox interaction methods failed: {span_error}")
-                except Exception as e:
-                    logger.warning(f"Error interacting with privacy field: {e}")
+                        except Exception as id_error:
+                            logger.warning(f"Error finding privacy checkbox: {id_error}")
+                            return
+            
+            # If still no element found, return
+            if element is None:
+                logger.warning("No privacy checkbox found")
+                return
+            
+            # Check if it's already selected
+            if element.get_attribute('type') == 'checkbox' and element.is_selected():
+                logger.info("Privacy checkbox already selected")
+                return
+            
+            # Make sure element is in view
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+            time.sleep(0.5)  # Brief pause for scrolling
+            
+            # Multiple strategies to click the checkbox
+            strategies = [
+                # Strategy 1: Direct click on checkbox
+                lambda: element.click(),
+                
+                # Strategy 2: JavaScript click on checkbox
+                lambda: self.driver.execute_script("arguments[0].click();", element),
+                
+                # Strategy 3: Find and click the label if ID is available
+                lambda: (self.driver.find_element(By.XPATH, f"//label[@for='{checkbox_id}']").click()) 
+                        if 'checkbox_id' in locals() and checkbox_id else None,
+                
+                # Strategy 4: Click the frame/styled element nearby
+                lambda: self.driver.find_element(By.CSS_SELECTOR, 
+                                                f"#{checkbox_id} + .checkbox-frame, #{checkbox_id} ~ .nb-checkbox-frame, "
+                                                f"#{checkbox_id} + span, #{checkbox_id} ~ span.checkbox-frame").click() 
+                        if 'checkbox_id' in locals() and checkbox_id else None,
+                
+                # Strategy 5: Set checked property via JavaScript
+                lambda: self.driver.execute_script(
+                    f"document.getElementById('{checkbox_id}').checked = true;"
+                    f"document.getElementById('{checkbox_id}').dispatchEvent(new Event('change', {{bubbles: true}}));"
+                ) if 'checkbox_id' in locals() and checkbox_id else self.driver.execute_script(
+                    "arguments[0].checked = true; arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", 
+                    element
+                ),
+                
+                # Strategy 6: Use parent node to click
+                lambda: self.driver.execute_script(
+                    "arguments[0].parentNode.click();", element
+                ),
+                
+                # Strategy 7: Find nearby span to click (for custom checkboxes)
+                lambda: self.driver.execute_script(
+                    "var spans = arguments[0].parentNode.querySelectorAll('span');"
+                    "if(spans.length > 0) spans[0].click();",
+                    element
+                )
+            ]
+            
+            # Try each strategy until one works
+            for i, strategy in enumerate(strategies):
+                try:
+                    strategy()
+                    logger.info(f"Privacy checkbox clicked with strategy {i+1}")
+                    return
+                except Exception as strategy_error:
+                    logger.debug(f"Strategy {i+1} failed: {strategy_error}")
+                    continue
+            
+            logger.warning("All privacy checkbox interaction strategies failed")
+        
         except Exception as e:
             logger.warning(f"Error in privacy field handling: {e}")
+
+    def select_checkbox_by_xpath(self, xpath, field_name='Checkbox'):
+        """
+        Select a checkbox by its xpath with multiple interaction strategies
+        
+        :param xpath: XPath of the checkbox element
+        :param field_name: Name of the field for logging purposes
+        """
+        try:
+            logger.info(f"Attempting to find checkbox for {field_name}")
+            logger.info(f"XPath: {xpath}")
+            
+            # Detailed element search
+            element = None
+            try:
+                # 1. Standard WebDriverWait
+                element = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, xpath))
+                )
+                logger.info("Found element via presence method")
+            except Exception as e1:
+                logger.warning(f"Presence method failed: {e1}")
+                
+                try:
+                    # 2. Visibility method
+                    element = WebDriverWait(self.driver, 10).until(
+                        EC.visibility_of_element_located((By.XPATH, xpath))
+                    )
+                    logger.info("Found element via visibility method")
+                except Exception as e2:
+                    logger.warning(f"Visibility method failed: {e2}")
+                    
+                    try:
+                        # 3. JavaScript method
+                        element = self.driver.execute_script(
+                            "return document.evaluate(arguments[0], document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;", 
+                            xpath
+                        )
+                        if element:
+                            logger.info("Found element via JavaScript")
+                        else:
+                            logger.warning("JavaScript method could not find the element")
+                    except Exception as e3:
+                        logger.error(f"JavaScript method failed: {e3}")
+                        return False
+            
+            # Interaction strategies
+            if element:
+                try:
+                    # 1. Try clicking the element directly
+                    if hasattr(element, 'click'):
+                        element.click()
+                        logger.info(f"Clicked {field_name} checkbox directly")
+                        return True
+                    elif element:
+                        # If element was found via JavaScript
+                        self.driver.execute_script("arguments[0].click();", element)
+                        logger.info(f"Clicked {field_name} checkbox via JavaScript")
+                        return True
+                except Exception as click_error:
+                    logger.warning(f"Direct click failed: {click_error}")
+                
+                try:
+                    # 2. Try finding and clicking the associated label
+                    checkbox_id = element.get_attribute('id') if hasattr(element, 'get_attribute') else element.id
+                    label = self.driver.find_element(By.XPATH, f"//label[@for='{checkbox_id}']")
+                    label.click()
+                    logger.info(f"Clicked label for {field_name} checkbox")
+                    return True
+                except Exception as label_error:
+                    logger.warning(f"Label click failed: {label_error}")
+                
+                try:
+                    # 3. JavaScript attribute setting
+                    self.driver.execute_script("""
+                        var elem = arguments[0];
+                        elem.checked = true;
+                        elem.dispatchEvent(new Event('change', { bubbles: true }));
+                    """, element)
+                    logger.info(f"Set checkbox state via JavaScript for {field_name}")
+                    return True
+                except Exception as js_error:
+                    logger.error(f"JavaScript checkbox setting failed: {js_error}")
+            
+            return False
+        
+        except Exception as e:
+            logger.error(f"Comprehensive error in finding {field_name} checkbox: {e}")
+            return False
