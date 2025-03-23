@@ -37,6 +37,24 @@ class FormInteraction:
         :return: Boolean indicating success
         """
         try:
+            # Add dynamic wait for the form to load completely
+            logger.info("Waiting for form to load completely...")
+            try:
+                # Wait for the first element in the form to be ready before proceeding
+                first_field = next((f for f in entry.get('fields', {}).values() if f.get('xpath')), None)
+                if first_field and first_field.get('xpath'):
+                    WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.XPATH, first_field['xpath']))
+                    )
+                    logger.info("Form is loaded and ready for interaction.")
+                else:
+                    # Fallback to static delay if no fields with XPath are found
+                    logger.info("No field XPaths found, using static delay...")
+                    time.sleep(3)
+            except Exception as e:
+                logger.warning(f"Wait for form load failed, using static delay: {e}")
+                time.sleep(3)
+
             # Process standard fields
             filled_fields = []
             
@@ -51,19 +69,30 @@ class FormInteraction:
                 'City': ['City', 'Town', 'city_name'],
                 'Zipcode': ['Zipcode', 'ZipCode', 'PostalCode', 'Zip', 'postal_code', 'zip_code'],
                 'State': ['State', 'Province', 'Region', 'state_province'],
-                'Country': ['Country', 'Nation', 'country_name']
+                'Country': ['Country', 'Nation', 'United States', 'USA', 'US', 'United States of America'],
+                'Brochure': ['Brochure', 'BrochureRequest', 'RequestType', 'request', "Request a Brochure"],
+                'Privacy': ['Privacy', 'PrivacyOption', 'DeliveryMethod', 'ContactPreference', 'Email', 'SendBy']
             }
             
             for field_name, field_info in entry.get('fields', {}).items():
                 # Skip Submit button
+                # Inside the process_form method in FormInteraction class
                 if field_name == 'Submit':
                     # Log submit button location
                     submit_xpath = field_info.get('xpath', '')
                     if submit_xpath:
-                        logger.info(f"--------------->  Submit button found at XPath: {submit_xpath}")
+                        try:
+                            # Check if the submit button exists on the page
+                            submit_element = self.driver.find_element(By.XPATH, submit_xpath)
+                            if submit_element:
+                                logger.info(f"Submit button found at XPath: {submit_xpath}")
+                            else:
+                                logger.info("Submit button not found (element reference is None)")
+                        except NoSuchElementException:
+                            logger.info(f"Submit button NOT found at XPath: {submit_xpath}")
                         continue
                     else:
-                        logger.info("Submit button NOT found")
+                        logger.info("Submit button XPath not provided")
 
                 
                 
@@ -98,8 +127,10 @@ class FormInteraction:
                     
                     # Handle different input types
                     element_type = field_info.get('type', '').lower()
-                    
-                    if element_type == 'select' or element.tag_name.lower() == 'select':
+                    if element_type == 'radio':
+                        # Special handling for radio buttons
+                        self.handle_radio_button(xpath, user_value)
+                    elif element_type == 'select' or element.tag_name.lower() == 'select':
                         self.handle_dropdown(element, user_value)
                     elif element_type == 'checkbox' and isinstance(user_value, bool):
                         # Handle boolean checkbox values
@@ -181,6 +212,27 @@ class FormInteraction:
             
             # Handle privacy checkboxes if needed
             self.handle_privacy_field(entry)
+
+            # Handle submit button click
+            # submit_info = entry.get('fields', {}).get('Submit', {})
+            # if submit_info and submit_info.get('found', False):
+            #     try:
+            #         submit_xpath = submit_info.get('xpath', '')
+            #         if submit_xpath:
+            #             logger.info(f"Clicking submit button at XPath: {submit_xpath}")
+            #             submit_button = WebDriverWait(self.driver, 5).until(
+            #                 EC.element_to_be_clickable((By.XPATH, submit_xpath))
+            #             )
+            #             # Scroll to make button visible
+            #             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit_button)
+            #             time.sleep(0.5)  # Small pause to let page stabilize
+                        
+            #             # Try to click the button
+            #             submit_button.click()
+            #             logger.info("Successfully clicked submit button")
+            #             time.sleep(3)  # Wait for form submission to process
+            #     except Exception as e:
+            #         logger.error(f"Error clicking submit button: {str(e)}")
             
             # Return True if any fields were filled
             return len(filled_fields) > 0
@@ -543,3 +595,111 @@ class FormInteraction:
         except Exception as e:
             logger.error(f"Comprehensive error in finding {field_name} checkbox: {e}")
             return False
+        
+    def handle_radio_button(self, xpath, value):
+        """
+        Select a radio button option based on the value, handling cases where the input element
+        might be obscured by a label or other elements
+        
+        :param xpath: XPath of the radio button element
+        :param value: Value to select (string value or True to select the first option)
+        """
+        try:
+            if value is True:
+                # Try to click the label instead of the input element
+                try:
+                    # First find the input element to get its ID
+                    element = self.driver.find_element(By.XPATH, xpath)
+                    element_id = element.get_attribute('id')
+                    
+                    if element_id:
+                        # Try to find and click the associated label
+                        label = self.driver.find_element(By.XPATH, f"//label[@for='{element_id}']")
+                        if label:
+                            logger.info(f"Clicking on label for radio button {element_id}")
+                            label.click()
+                            return
+                except Exception as e:
+                    logger.warning(f"Could not click on label, trying JavaScript click: {e}")
+                    
+                # If label click failed, try JavaScript click
+                try:
+                    element = self.driver.find_element(By.XPATH, xpath)
+                    self.driver.execute_script("arguments[0].click();", element)
+                    logger.info(f"Selected radio button at {xpath} using JavaScript click")
+                    return
+                except Exception as js_error:
+                    logger.error(f"JavaScript click failed: {js_error}")
+                    
+                return
+                
+            # For radio groups with a specific value to match
+            radio_element = self.driver.find_element(By.XPATH, xpath)
+            radio_name = radio_element.get_attribute('name')
+            
+            if not radio_name:
+                # If can't get name, try clicking the label or use JavaScript
+                element_id = radio_element.get_attribute('id')
+                if element_id:
+                    try:
+                        label = self.driver.find_element(By.XPATH, f"//label[@for='{element_id}']")
+                        label.click()
+                        logger.info(f"Selected radio button by clicking label for {element_id}")
+                        return
+                    except Exception:
+                        # Fallback to JavaScript click
+                        self.driver.execute_script("arguments[0].click();", radio_element)
+                        logger.info(f"Selected radio button at {xpath} using JavaScript click")
+                        return
+                
+            # Find all radio buttons with the same name
+            radio_buttons = self.driver.find_elements(By.XPATH, f"//input[@type='radio'][@name='{radio_name}']")
+            
+            for radio in radio_buttons:
+                # Check if the value matches (case insensitive)
+                radio_value = radio.get_attribute('value')
+                if isinstance(value, str) and radio_value and radio_value.lower() == value.lower():
+                    # Try to click the label instead of the radio button
+                    try:
+                        radio_id = radio.get_attribute('id')
+                        if radio_id:
+                            label = self.driver.find_element(By.XPATH, f"//label[@for='{radio_id}']")
+                            label.click()
+                            logger.info(f"Selected radio button with value: {value} by clicking its label")
+                            return
+                    except Exception:
+                        # Fallback to JavaScript click
+                        self.driver.execute_script("arguments[0].click();", radio)
+                        logger.info(f"Selected radio button with value: {value} using JavaScript click")
+                        return
+                    
+                # Try to find by label text
+                try:
+                    radio_id = radio.get_attribute('id')
+                    if radio_id:
+                        label = self.driver.find_element(By.XPATH, f"//label[@for='{radio_id}']")
+                        if label.text.lower() == str(value).lower():
+                            label.click()
+                            logger.info(f"Selected radio button with label text: {value}")
+                            return
+                except Exception:
+                    pass
+                    
+            # If no match found and there are radio buttons, select the first one via its label
+            if radio_buttons:
+                try:
+                    first_radio = radio_buttons[0]
+                    first_id = first_radio.get_attribute('id')
+                    if first_id:
+                        first_label = self.driver.find_element(By.XPATH, f"//label[@for='{first_id}']")
+                        first_label.click()
+                        logger.info(f"No matching radio button found for '{value}', selected first option via label")
+                        return
+                except Exception:
+                    # Fallback to JavaScript click on the first radio button
+                    self.driver.execute_script("arguments[0].click();", radio_buttons[0])
+                    logger.info(f"No matching radio button found for '{value}', selected first option via JavaScript")
+                    
+        except Exception as e:
+            logger.error(f"Error in radio button handling: {str(e)}")
+
